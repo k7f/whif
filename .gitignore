@@ -1,0 +1,10 @@
+*~
+*.pyc
+*.pyo
+*.o
+Cargo.lock
+/target/
+/tools/
+**/log/
+**/data/
+**/ref/
