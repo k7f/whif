@@ -1,5 +1,5 @@
 pub trait DetailedWhifError {
-    fn with_details(self, details: String) -> WhifError;
+    fn with_details<S: AsRef<str>>(self, details: S) -> WhifError;
 }
 
 #[macro_export]
@@ -16,12 +16,13 @@ macro_rules! detailed_whif_error {
 #[derive(Debug)]
 enum InnerError {
     IO(std::io::Error),
+    Domain(Option<usize>),
 }
 
 macro_rules! impl_inner_error {
     ($error:ty, $variant:ident) => {
         impl DetailedWhifError for $error {
-            fn with_details(self, details: String) -> WhifError {
+            fn with_details<S: AsRef<str>>(self, details: S) -> WhifError {
                 InnerError::from(self).with_details(details)
             }
         }
@@ -46,7 +47,7 @@ impl_inner_error!(std::io::Error, IO);
 
 impl DetailedWhifError for InnerError {
     #[inline]
-    fn with_details(self, details: String) -> WhifError {
+    fn with_details<S: AsRef<str>>(self, details: S) -> WhifError {
         WhifError::from(self).with_details(details)
     }
 }
@@ -57,6 +58,13 @@ impl std::fmt::Display for InnerError {
 
         match self {
             IO(err) => write!(f, "IO error {:?}", err),
+            Domain(var) => {
+                if let Some(var) = var {
+                    write!(f, "Domain error for sol_{}", var)
+                } else {
+                    write!(f, "Domain error")
+                }
+            }
         }
     }
 }
@@ -74,11 +82,15 @@ impl WhifError {
     {
         std::io::Error::new(std::io::ErrorKind::Other, err).into()
     }
+
+    pub fn domain(var: Option<usize>) -> Self {
+        WhifError { inner: InnerError::Domain(var), details: None }
+    }
 }
 
 impl DetailedWhifError for WhifError {
-    fn with_details(mut self, details: String) -> WhifError {
-        self.details = Some(details);
+    fn with_details<S: AsRef<str>>(mut self, details: S) -> WhifError {
+        self.details = Some(details.as_ref().to_string());
         self
     }
 }

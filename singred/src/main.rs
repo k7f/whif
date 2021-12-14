@@ -190,7 +190,7 @@ pub fn create_problem(
                 Unconstrained
             };
 
-            problem.add_constraint(row, col, linear::binary::Constraint::new_delta(row, col, rel));
+            problem.add_constraint(row, col, 1, 1, rel);
         }
     }
 
