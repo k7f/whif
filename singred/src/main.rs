@@ -165,30 +165,16 @@ pub fn create_problem(
     // traverse lower triangle => row > col
     for row in 1..dim {
         for col in 0..row {
-            use linear::binary::Relation::*;
+            // delta = sol[row] - sol[col]
+            // optimal solution: -lov + delta >= 0 and hiv - delta >= 0
+            // hence: lov <= delta <= hiv
+            // if lov > hiv, then suboptimal solution:
+            // not (-lov + delta < 0 and hiv - delta < 0)
+            // hence: delta >= lov or delta <= hiv
 
             let lov = -source_matrix[(row, col)];
             let hiv = source_matrix[(col, row)];
-
-            // delta = sol[row] - sol[col]
-            // -lov + delta >= 0, hiv - delta >= 0
-            // lov <= delta <= hiv
-
-            let rel = if hiv == lov {
-                Equality(hiv)
-            } else if hiv < lov {
-                Or(lov, hiv)
-            } else if hiv < infinity {
-                if -lov < infinity {
-                    And(lov, hiv)
-                } else {
-                    Leq(hiv)
-                }
-            } else if -lov < infinity {
-                Geq(lov)
-            } else {
-                Unconstrained
-            };
+            let rel = linear::binary::Relation::from_interval(lov, hiv, infinity);
 
             problem.add_constraint(row, col, 1, 1, rel);
         }

@@ -40,6 +40,31 @@ pub enum Relation<T: Scalar> {
     Unconstrained,
 }
 
+impl<T: Scalar> Relation<T> {
+    pub fn from_interval(lov: T, hiv: T, infinity: T) -> Self {
+        use Relation::*;
+
+        if hiv == lov {
+            Equality(hiv)
+        } else if hiv < lov {
+            // If two inequalities can't be satisfied jointly, at least
+            // satisfy one of them: dp >= lov or dp <= hiv
+            Or(lov, hiv)
+        } else if hiv < infinity {
+            if -lov < infinity {
+                And(lov, hiv)
+            } else {
+                Leq(hiv)
+            }
+        } else if -lov < infinity {
+            Geq(lov)
+        } else {
+            Unconstrained
+        }
+    }
+}
+
+// Arithmetic negation
 impl<T: Scalar> std::ops::Neg for Relation<T> {
     type Output = Self;
 
@@ -59,19 +84,39 @@ impl<T: Scalar> std::ops::Neg for Relation<T> {
     }
 }
 
+// Logical negation
+impl<T: Scalar> std::ops::Not for Relation<T> {
+    type Output = Self;
+
+    fn not(self) -> Self::Output {
+        use Relation::*;
+
+        match self {
+            Equality(offset) => Or(offset + T::one(), offset - T::one()),
+            Leq(hiv) => Geq(hiv + T::one()),
+            Geq(lov) => Leq(lov - T::one()),
+            Or(lov, hiv) => And(hiv + T::one(), lov - T::one()),
+            And(lov, hiv) => Or(hiv + T::one(), lov - T::one()),
+            Contradiction => Unconstrained,
+            Unconstrained => Contradiction,
+        }
+    }
+}
+
 /// The only public constructor of `Constraint`s is
 /// [`Problem::add_constraint`].  See its doc comments for the
 /// specification of valid argument values.
 ///
 /// Internally, the contract is to maintain the invariants:
-/// `Constraint::row_multiplier().is_positive()`,
-/// `!Constraint::column_multiplier().is_zero()`, and
-/// `Constraint::target_row() >= Constraint::target_column()`.
+/// `self.row_multiplier().is_positive()`, if
+/// `self.column_multiplier().is_zero()` then `self.is_unary()`, and
+/// `self.target_row() >= self.target_column()`.
 ///
 /// Note that constraints projected onto the main diagonal (but not
 /// over it) are allowed, albeit only temporarily.  All such elements
-/// should eventually be converted into `Relation::Contradiction`,
-/// `Relation::Unconstrained`, or domain shrinkage.
+/// (unary constraints) should eventually be converted into
+/// `Relation::Contradiction`, or `Relation::Unconstrained` with
+/// domain shrinkage.
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub struct Constraint<T: Scalar> {
     row: usize,
@@ -134,6 +179,11 @@ impl<T: Scalar> Constraint<T> {
     }
 
     #[inline]
+    fn is_unary(&self) -> bool {
+        self.row == self.col
+    }
+
+    #[inline]
     fn is_delta(&self) -> bool {
         self.mur == self.muc // assuming simplification
     }
@@ -143,10 +193,38 @@ impl<T: Scalar> Constraint<T> {
         row_domain: (T, T),
         col_domain: (T, T),
     ) -> (Option<(T, T)>, Option<(T, T)>) {
-        if self.row == self.col {
+        if self.is_unary() {
             use Relation::*;
 
-            let multiplier = self.mur - self.muc;
+            let mut multiplier = self.mur - self.muc;
+
+            if multiplier.is_zero() {
+                self.mur = T::one();
+                self.muc = T::one();
+            } else {
+                self.mur = T::one();
+                self.muc = T::zero();
+
+                if multiplier.is_negative() {
+                    multiplier = -multiplier;
+                    self.rel = -self.rel;
+                }
+            }
+
+            let mut domain = row_domain;
+
+            if domain.0 <= col_domain.0 {
+                domain.0 = col_domain.0;
+            }
+
+            if domain.1 >= col_domain.1 {
+                domain.1 = col_domain.1;
+            }
+
+            if domain.1 < domain.0 {
+                self.rel = Contradiction;
+                return (None, None)
+            }
 
             match self.rel {
                 Equality(offset) => {
@@ -154,8 +232,14 @@ impl<T: Scalar> Constraint<T> {
                         self.rel = if offset.is_zero() { Unconstrained } else { Contradiction };
                         (None, None)
                     } else {
-                        // FIXME shrink domains
-                        (None, None)
+                        if offset.is_multiple_of(&multiplier) {
+                            self.rel = Unconstrained;
+                            let sol = offset / multiplier;
+                            (Some((sol, sol)), Some((sol, sol)))
+                        } else {
+                            self.rel = Contradiction;
+                            (None, None)
+                        }
                     }
                 }
                 Leq(hiv) => {
@@ -163,8 +247,20 @@ impl<T: Scalar> Constraint<T> {
                         self.rel = if hiv.is_negative() { Contradiction } else { Unconstrained };
                         (None, None)
                     } else {
-                        // FIXME shrink domains: multiplier * sol <= hiv
-                        (None, None)
+                        let new_hiv = hiv.div_floor(&multiplier);
+
+                        if new_hiv < domain.0 {
+                            self.rel = Contradiction;
+                            (None, None)
+                        } else {
+                            self.rel = Unconstrained;
+
+                            if new_hiv < domain.1 {
+                                (Some((domain.0, new_hiv)), Some((domain.0, new_hiv)))
+                            } else {
+                                (None, None)
+                            }
+                        }
                     }
                 }
                 Geq(lov) => {
@@ -172,8 +268,20 @@ impl<T: Scalar> Constraint<T> {
                         self.rel = if lov.is_positive() { Contradiction } else { Unconstrained };
                         (None, None)
                     } else {
-                        // FIXME shrink domains: multiplier * sol >= lov
-                        (None, None)
+                        let new_lov = lov.div_ceil(&multiplier);
+
+                        if new_lov > domain.1 {
+                            self.rel = Contradiction;
+                            (None, None)
+                        } else {
+                            self.rel = Unconstrained;
+
+                            if new_lov > domain.0 {
+                                (Some((new_lov, domain.1)), Some((new_lov, domain.1)))
+                            } else {
+                                (None, None)
+                            }
+                        }
                     }
                 }
                 Or(lov, hiv) => {
@@ -185,8 +293,39 @@ impl<T: Scalar> Constraint<T> {
                         };
                         (None, None)
                     } else {
-                        // FIXME shrink domains
-                        (None, None)
+                        let new_hiv = hiv.div_floor(&multiplier);
+                        let new_lov = lov.div_ceil(&multiplier);
+
+                        // dp >= domain.0 and dp <= domain.1 and (dp >= new_lov or dp <= new_hiv)
+
+                        if new_hiv < domain.0 {
+                            if new_lov > domain.1 {
+                                self.rel = Contradiction;
+                                (None, None)
+                            } else {
+                                self.rel = Unconstrained;
+
+                                if new_lov > domain.0 {
+                                    (Some((new_lov, domain.1)), Some((new_lov, domain.1)))
+                                } else {
+                                    (None, None)
+                                }
+                            }
+                        } else if new_lov > domain.1 {
+                            self.rel = Unconstrained;
+
+                            if new_hiv < domain.1 {
+                                (Some((domain.0, new_hiv)), Some((domain.0, new_hiv)))
+                            } else {
+                                (None, None)
+                            }
+                        } else if new_lov > new_hiv {
+                            self.rel = Or(new_lov, new_hiv);
+                            (None, None)
+                        } else {
+                            self.rel = Unconstrained;
+                            (None, None)
+                        }
                     }
                 }
                 And(lov, hiv) => {
@@ -198,8 +337,30 @@ impl<T: Scalar> Constraint<T> {
                         };
                         (None, None)
                     } else {
+                        let new_hiv = hiv.div_floor(&multiplier);
+                        let new_lov = lov.div_ceil(&multiplier);
+
                         // FIXME shrink domains
-                        (None, None)
+                        // dp >= domain.0 and dp <= domain.1 and dp >= new_lov and dp <= new_hiv
+
+                        if new_hiv < domain.0 || new_lov > domain.1 {
+                            self.rel = Contradiction;
+                            (None, None)
+                        } else {
+                            self.rel = Unconstrained;
+
+                            if new_hiv < domain.1 {
+                                if new_lov > domain.0 {
+                                    (Some((new_lov, new_hiv)), Some((new_lov, new_hiv)))
+                                } else {
+                                    (Some((domain.0, new_hiv)), Some((domain.0, new_hiv)))
+                                }
+                            } else if new_lov > domain.0 {
+                                (Some((new_lov, domain.1)), Some((new_lov, domain.1)))
+                            } else {
+                                (None, None)
+                            }
+                        }
                     }
                 }
                 _ => (None, None),
@@ -420,9 +581,10 @@ impl<T: Scalar> Substitution<T> {
 
 // The invariant `constraints[row].len() == row` is maintained for
 // every `row`.  In particular, the main diagonal is excluded,
-// i.e. the original set of constraints never contains one with `row
-// == col`.  However, it may eventually be projected onto the main
-// diagonal by substitution, and later removed.
+// i.e. the original set of constraints never contains a unary
+// element, i.e. the one with `row == col`.  However, it may
+// eventually be projected onto the main diagonal by substitution, and
+// later removed.
 #[derive(Clone, Debug)]
 pub struct Problem<T: Scalar> {
     domains:       Vec<(T, T)>,
@@ -1020,5 +1182,37 @@ impl<T: 'static + Scalar> Solver<T> {
         }
 
         Ok((result, unparsed_output))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_update_domains_unary_leq() {
+        let mut cst: Constraint<i32> =
+            Constraint { row: 0, col: 0, mur: 3, muc: 1, rel: Relation::Leq(-6) };
+        let domains = cst.update_domains((-10, 10), (-10, 10));
+        assert_eq!(domains, (Some((-10, -3)), Some((-10, -3))));
+        assert_eq!(cst.rel, Relation::Unconstrained);
+    }
+
+    #[test]
+    fn test_update_domains_unary_or_keep() {
+        let mut cst: Constraint<i32> =
+            Constraint { row: 0, col: 0, mur: 3, muc: 1, rel: Relation::Or(-3, -6) };
+        let domains = cst.update_domains((-10, 10), (-10, 10));
+        assert_eq!(domains, (None, None));
+        assert_eq!(cst.rel, Relation::Or(-1, -3));
+    }
+
+    #[test]
+    fn test_update_domains_unary_or_shrink() {
+        let mut cst: Constraint<i32> =
+            Constraint { row: 0, col: 0, mur: 3, muc: 1, rel: Relation::Or(-5, -21) };
+        let domains = cst.update_domains((-10, 10), (-10, 10));
+        assert_eq!(domains, (Some((-2, 10)), Some((-2, 10))));
+        assert_eq!(cst.rel, Relation::Unconstrained);
     }
 }
