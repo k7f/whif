@@ -16,6 +16,8 @@ macro_rules! detailed_whif_error {
 #[derive(Debug)]
 enum InnerError {
     IO(std::io::Error),
+    UndeclaredVariable(usize),
+    UndeclaredConstraint(Vec<usize>),
     Domain(Option<usize>),
 }
 
@@ -58,6 +60,20 @@ impl std::fmt::Display for InnerError {
 
         match self {
             IO(err) => write!(f, "IO error {:?}", err),
+            UndeclaredVariable(var) => write!(f, "Undeclared variable sol_{}", var),
+            UndeclaredConstraint(vars) => if let Some((head, tail)) = vars.split_first() {
+                if tail.is_empty() {
+                    write!(f, "Undeclared unary constraint for sol_{}", head)
+                } else {
+                    write!(f, "Undeclared constraint for variables: sol_{}", head)?;
+                    for var in tail {
+                        write!(f, ", sol_{}", var)?;
+                    }
+                    Ok(())
+                }
+            } else {
+                write!(f, "Undeclared empty constraint")
+            }
             Domain(var) => {
                 if let Some(var) = var {
                     write!(f, "Domain error for sol_{}", var)
@@ -81,6 +97,14 @@ impl WhifError {
         E: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
         std::io::Error::new(std::io::ErrorKind::Other, err).into()
+    }
+
+    pub fn undeclared_variable(var: usize) -> Self {
+        WhifError { inner: InnerError::UndeclaredVariable(var), details: None }
+    }
+
+    pub fn undeclared_constraint(vars: Vec<usize>) -> Self {
+        WhifError { inner: InnerError::UndeclaredConstraint(vars), details: None }
     }
 
     pub fn domain(var: Option<usize>) -> Self {

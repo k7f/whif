@@ -152,6 +152,40 @@ impl<T: Scalar> Constraint<T> {
         self.rel
     }
 
+    fn canonicalize(&mut self) -> Result<(), WhifError> {
+        if self.row < self.col {
+            return Err(WhifError::undeclared_constraint(vec![self.row, self.col]))
+        }
+
+        if self.mur.is_zero() {
+            if self.muc.is_zero() {
+                return Err(WhifError::undeclared_constraint(Vec::new()))
+            }
+            self.row = self.col;
+            self.mur = self.muc;
+            self.muc = T::zero();
+            if self.mur.is_negative() {
+                self.mur = -self.mur;
+                self.rel = -self.rel;
+            }
+        } else if self.muc.is_zero() {
+            self.col = self.row;
+            if self.mur.is_negative() {
+                self.mur = -self.mur;
+                self.rel = -self.rel;
+            }
+        } else if self.mur.is_negative() {
+            self.mur = -self.mur;
+            self.muc = -self.muc;
+            self.rel = -self.rel;
+        }
+
+        self.simplify();
+
+        Ok(())
+    }
+
+    // Assumes that invariants are satisfied.
     fn simplify(&mut self) {
         let gcd = self.mur.gcd(&self.muc);
 
@@ -340,7 +374,6 @@ impl<T: Scalar> Constraint<T> {
                         let new_hiv = hiv.div_floor(&multiplier);
                         let new_lov = lov.div_ceil(&multiplier);
 
-                        // FIXME shrink domains
                         // dp >= domain.0 and dp <= domain.1 and dp >= new_lov and dp <= new_hiv
 
                         if new_hiv < domain.0 || new_lov > domain.1 {
@@ -376,12 +409,12 @@ impl<T: Scalar> Constraint<T> {
         &mut self,
         row_sub: Option<Substitution<T>>,
         col_sub: Option<Substitution<T>>,
-    ) {
+    ) -> Result<(), WhifError> {
         use Relation::*;
 
         if !self.is_delta() {
             // FIXME
-            return
+            return Ok(())
         }
 
         let row_sub = row_sub.unwrap_or(Substitution::new(self.row));
@@ -438,7 +471,7 @@ impl<T: Scalar> Constraint<T> {
             }
         }
 
-        self.simplify();
+        self.canonicalize()
     }
 }
 
@@ -604,81 +637,55 @@ impl<T: Scalar> Problem<T> {
         mut row_multiplier: T,
         mut col_multiplier: T,
         rel: Relation<T>,
-    ) {
-        // FIXME convert asserts into errors
-        assert!(row < self.constraints.len());
-        assert!(row > col);
+    ) -> Result<(), WhifError> {
+        if row >= self.constraints.len() {
+            return Err(WhifError::undeclared_variable(row))
+        }
 
-        if row_multiplier.is_zero() {
-            assert!(!col_multiplier.is_zero());
+        let mut cst = Constraint { row, col, mur: row_multiplier, muc: col_multiplier, rel };
+        cst.canonicalize()?;
+
+        if cst.is_unary() {
             // FIXME domain shrinkage: by <= h, etc.
-        } else if col_multiplier.is_zero() {
-            // FIXME domain shrinkage: ax <= h, etc.
-        } else if row_multiplier == col_multiplier {
-            match rel {
-                Relation::Equality(mut offset) => {
-                    let mut target = col;
-
-                    if row_multiplier.is_negative() {
-                        offset = -offset;
-                    }
-
-                    while let Some(next_sub) = self.substitutions[target] {
-                        target = next_sub.target;
-                        offset += next_sub.offset;
-                    }
-
-                    self.constraints[row][col] = None;
-                    self.substitutions[row] =
-                        Some(Substitution { target, multiplier: T::one(), offset });
-                }
-                Relation::Unconstrained => {
-                    self.constraints[row][col] = None;
-                }
-                _ => {
-                    self.constraints[row][col] = Some(Constraint {
-                        row,
-                        col,
-                        mur: T::one(),
-                        muc: T::one(),
-                        rel: if row_multiplier.is_positive() { rel } else { -rel },
-                    });
-                }
-            }
+            self.constraints[row][col] = Some(cst);
         } else {
-            match rel {
-                Relation::Equality(_offset) => {
-                    // FIXME non-delta substitution
-                    self.constraints[row][col] = None;
+            match cst.rel {
+                Relation::Equality(mut offset) => {
+                    if cst.is_delta() {
+                        let mut target = col;
+
+                        while let Some(next_sub) = self.substitutions[target] {
+                            target = next_sub.target;
+                            offset += next_sub.offset;
+                        }
+
+                        self.constraints[row][col] = None;
+                        self.substitutions[row] =
+                            Some(Substitution { target, multiplier: T::one(), offset });
+                    } else {
+                        // FIXME non-delta substitution
+                        self.constraints[row][col] = None;
+                    }
                 }
                 Relation::Unconstrained => {
                     self.constraints[row][col] = None;
                 }
                 _ => {
-                    let mut cst = if row_multiplier.is_positive() {
-                        Constraint { row, col, mur: row_multiplier, muc: col_multiplier, rel }
-                    } else {
-                        Constraint {
-                            row,
-                            col,
-                            mur: -row_multiplier,
-                            muc: -col_multiplier,
-                            rel: -rel,
-                        }
-                    };
-
-                    cst.simplify();
                     self.constraints[row][col] = Some(cst);
                 }
             }
         }
+
+        Ok(())
     }
 
+    #[inline]
     pub fn get_constraint(&self, row: usize, col: usize) -> Option<Constraint<T>> {
-        // FIXME convert asserts into errors
-        assert!(row < self.constraints.len());
-        assert!(row > col);
-        self.constraints[row][col]
+        if row > col && row < self.constraints.len() {
+            self.constraints[row][col]
+        } else {
+            None
+        }
     }
 
     fn preprocess(&mut self) {
@@ -959,7 +966,7 @@ impl<T: 'static + Scalar> Solver<T> {
 
     pub fn get_problem(&self, dim: usize) -> Problem<T> {
         let domains = [(self.get_lower_limit(), self.upper_limit)].repeat(dim);
-        let constraints = (0..dim).map(|row| [None].repeat(row)).collect();
+        let constraints = (0..dim).map(|row| [None].repeat(row + 1)).collect();
         let substitutions = [None].repeat(dim);
         let mergeouts = HashSet::new();
         let verbosity = self.verbosity;

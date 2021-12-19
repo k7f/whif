@@ -156,7 +156,7 @@ fn done(start_time: Option<std::time::Instant>) {
 pub fn create_problem(
     solver: &linear::binary::Solver<i32>,
     source_matrix: na::DMatrix<i32>,
-) -> linear::binary::Problem<i32> {
+) -> Result<linear::binary::Problem<i32>, Box<dyn std::error::Error>> {
     let dim = source_matrix.nrows();
     let upper_limit = solver.get_upper_limit();
     let infinity = upper_limit + upper_limit; // target(r,c) |-> source(r,c) + sol(r) - sol(c)
@@ -176,11 +176,11 @@ pub fn create_problem(
             let hiv = source_matrix[(col, row)];
             let rel = linear::binary::Relation::from_interval(lov, hiv, infinity);
 
-            problem.add_constraint(row, col, 1, 1, rel);
+            problem.add_constraint(row, col, 1, 1, rel)?;
         }
     }
 
-    problem
+    Ok(problem)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -218,7 +218,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let start_time = app.start("Creating the problem...");
         let source_matrix = ad_hoc_solver.get_origin_matrix().clone();
-        let problem = create_problem(&mut solver, source_matrix);
+        let problem = create_problem(&mut solver, source_matrix)?;
         done(start_time);
 
         let start_time = app.start("Solving the problem...");
