@@ -72,7 +72,7 @@ impl std::fmt::Display for InnerError {
                     Ok(())
                 }
             } else {
-                write!(f, "Undeclared empty constraint")
+                write!(f, "Unexpected nullary constraint")
             }
             Domain(var) => {
                 if let Some(var) = var {
