@@ -36,7 +36,9 @@ pub enum Relation<T: Scalar> {
     Geq(T),
     Or(T, T),
     And(T, T),
+    /// Codomain is empty. 
     Contradiction,
+    /// Codomain is the entire integer axis.
     Unconstrained,
 }
 
@@ -668,24 +670,39 @@ impl<T: Scalar> Substitution<T> {
     }
 }
 
-/// A (blint) `Problem` of dimension `n` may be reduced so that it
-/// consists of `n` variables and `m` constraints, such that each
-/// constraint is a linear function of two of the `n` variables, there
-/// is a finite interval of `Z` (set of integers) assigned to each
-/// variable as its domain, and a subset of `Z` &mdash; being the
-/// union of a disjoint family of arbitrary intervals of `Z` &mdash;
-/// assigned to each constraint as its codomain.  Furthermore, no two
-/// constraints of a reduced problem may share two common variables,
-/// so that `m <= (n-1)^2`.
+/// Linear binary constraint satisfaction problem over integers.
 ///
-/// _Implementation details_.
+/// A `blint::Problem` of dimension *n* is a CSP that may be reduced
+/// so that it consists of *n* variables with domains given as finite
+/// intervals of ℤ (set of integers), and *m* constraints, such that
+/// each constraint is represented by
+///
+/// - a linear function of exactly two of the variables, and
+///
+/// - a subset of ℤ, called a *codomain* of that constraint.
+///
+/// Consequently, a constraint represented by a function *f* and a
+/// codomain ***C*** is a binary relation containing all pairs of
+/// integers from the corresponding domains on which *f* evaluates to
+/// an element of ***C***.  In other words, ***C*** is the (given)
+/// codomain of the restriction of *f* to the set of (unknown)
+/// solutions of that single constraint.
+///
+/// For practical reasons, the only valid codomain of a blint
+/// constraint is the union of a small set &mdash; of cardinality
+/// bounded by a compile time parameter &mdash; of disjoint, possibly
+/// infinite intervals of ℤ.  Furthermore, no two constraints of a
+/// reduced blint problem may share both variables, hence *m* &leq;
+/// (*n*-1)<sup>2</sup>.
+///
+/// ***Implementation details.***
 ///
 /// The invariant `constraints[row].len() == row` is maintained for
 /// every `row`.  In particular, the main diagonal is excluded, so
 /// that the original set of constraints never contains a unary
-/// element, i.e. the one with `row == col`.  However, it may
-/// eventually be projected onto the main diagonal by substitution,
-/// and later removed.
+/// element, i.e. the one with `row == col`.  However some constraints
+/// may eventually be projected onto the main diagonal by
+/// substitution, and later removed.
 #[derive(Clone, Debug)]
 pub struct Problem<T: Scalar> {
     domains:       Vec<(T, T)>,
@@ -705,11 +722,12 @@ impl<T: Scalar> Problem<T> {
     ///
     /// Valid argument values must satisfy
     ///
-    /// - `row < Problem::get_dimension()`
+    /// - `row < Problem::get_dimension()`,
     /// - `!(row_multiplier.is_zero() && col_multiplier.is_zero())`
     ///
-    /// i.e. it's an error to bind an undeclared variable, or add a
-    /// nullary constraint.
+    /// &mdash; binding an undeclared variable or adding a nullary
+    /// constraint is an error.  Unary constraint is valid as input,
+    /// but it is transformed into a restriction of variable's domain.
     pub fn add_constraint(
         &mut self,
         row: usize,

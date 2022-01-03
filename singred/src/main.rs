@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use nalgebra as na;
 use whif::io;
-use whif_sendzinc::linear;
+use whif_sendzinc::blint;
 
 mod ad_hoc;
 
@@ -154,9 +154,9 @@ fn done(start_time: Option<std::time::Instant>) {
 }
 
 pub fn create_problem(
-    solver: &linear::binary::Solver<i32>,
+    solver: &blint::Solver<i32>,
     source_matrix: na::DMatrix<i32>,
-) -> Result<linear::binary::Problem<i32>, Box<dyn std::error::Error>> {
+) -> Result<blint::Problem<i32>, Box<dyn std::error::Error>> {
     let dim = source_matrix.nrows();
     let upper_limit = solver.get_upper_limit();
     let infinity = upper_limit + upper_limit; // target(r,c) |-> source(r,c) + sol(r) - sol(c)
@@ -174,7 +174,7 @@ pub fn create_problem(
 
             let lov = -source_matrix[(row, col)];
             let hiv = source_matrix[(col, row)];
-            let rel = linear::binary::Relation::from_interval(lov, hiv, infinity);
+            let rel = blint::Relation::from_interval(lov, hiv, infinity);
 
             problem.add_constraint(row, col, 1, 1, rel)?;
         }
@@ -201,7 +201,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else if !app.user_jump.is_empty() {
         ad_hoc_solver.push_jump((app.user_jump.as_slice(), dim));
     } else {
-        let mut solver = linear::binary::Solver::<i32>::new().with_verbosity(app.verbosity);
+        let mut solver = blint::Solver::<i32>::new().with_verbosity(app.verbosity);
 
         if let Some(upper_limit) = app.upper_limit {
             solver.set_upper_limit(upper_limit);

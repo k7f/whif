@@ -13,6 +13,6 @@ readme = "README.md"
 
 tracing = "0.1"
 num = "0.4"
-nalgebra = "0.29"
+nalgebra = "0.30"
 whif = { path = "../whif" }
 whif_sendzinc = { path = "../sendzinc" }
